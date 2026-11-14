@@ -1,0 +1,80 @@
+{
+    "host": {
+        "description": "内嵌服务监听地址",
+        "hint": "容器内监听地址，一般不用改。",
+        "type": "string",
+        "default": "0.0.0.0"
+    },
+    "port": {
+        "description": "内嵌服务端口",
+        "hint": "App 通过这个端口连过来。默认 8899，需与 docker 侧的端口转发一致。",
+        "type": "int",
+        "default": 8899
+    },
+    "public_base": {
+        "description": "对外访问基址",
+        "hint": "只用于在 QQ 里把地址展示给用户，例如 https://samachat.de5.net/pet",
+        "type": "string",
+        "default": "https://samachat.de5.net/pet"
+    },
+    "persona": {
+        "description": "角色性格",
+        "hint": "会写进每次生成反应的系统提示词里。留空用内置性格（黏人、嘴硬心软）。",
+        "type": "text",
+        "default": "黏人、嘴硬心软、喜欢被摸头、偶尔耍小脾气，但从来不会真的记仇。"
+    },
+    "token_required": {
+        "description": "是否强制绑定校验",
+        "hint": "打开时所有接口都要 Bearer token（推荐）。仅本地调试可关闭。",
+        "type": "bool",
+        "default": true
+    },
+    "code_ttl": {
+        "description": "绑定码有效期（秒）",
+        "hint": "默认 600 秒 = 10 分钟。",
+        "type": "int",
+        "default": 600
+    },
+    "touch_to_qq": {
+        "description": "App 触摸播报到 QQ",
+        "hint": "打开后，有人在 App 里摸它，QQ 会收到一条播报（这就是「虚现互通」的一半）。",
+        "type": "bool",
+        "default": true
+    },
+    "touch_qq_interval": {
+        "description": "触摸播报最小间隔（秒）",
+        "hint": "防止狂摸刷屏；亲吻/抱抱/投喂等刻意动作不受此限制。",
+        "type": "int",
+        "default": 30
+    },
+    "mirror_app_to_qq": {
+        "description": "App 里的对话镜像到 QQ",
+        "hint": "在 App 里对它说的话，会同步到 QQ，让你在现实里也看到。",
+        "type": "bool",
+        "default": true
+    },
+    "force_reply_private": {
+        "description": "私聊自动回复",
+        "hint": "房主在 QQ 私聊里随便说话都让 AstrBot 正常回话（内容会同步到 App）。",
+        "type": "bool",
+        "default": true
+    },
+    "touch_llm_cooldown": {
+        "description": "同类触摸生成台词的冷却（秒）",
+        "hint": "连续摸头时不必每次都调大模型，冷却期内用规则台词。",
+        "type": "int",
+        "default": 6
+    },
+    "llm_timeout": {
+        "description": "生成反应的大模型超时（秒）",
+        "hint": "超时会自动退回规则台词，不会卡住。",
+        "type": "int",
+        "default": 12
+    },
+    "whitelist": {
+        "description": "白名单 QQ",
+        "hint": "这些 QQ 号也能操控角色（房主始终可以）。",
+        "type": "list",
+        "default": []
+    }
+}

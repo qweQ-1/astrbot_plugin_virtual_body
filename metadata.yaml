@@ -1,0 +1,34 @@
+name: astrbot_plugin_virtual_body
+display_name: 虚拟身体 · 虚现互通
+author: Minis
+version: v1.0.0
+repo: https://github.com/local/astrbot_plugin_virtual_body
+desc: >
+  把机器人变成一个**有身体的虚拟生命**：它住在手机 App 里，可以被手指触摸（摸头、抱抱、
+  挠痒、投喂、抛起来……），并且「虚拟」与「现实」双向互通——App 里摸它会播报到 QQ，
+  你在 QQ 里说的话会从它在 App 里说出同一个回复。进 App 前先用 QQ 生成绑定码认领房主，
+  之后能用 QQ 聊天操控它的全部操作：说话、动作、表情、换装、睡觉、散步、改名、静音、解绑。
+short_desc: 让机器人变成能触摸、能通过 QQ 双向互通的虚拟角色
+help: |
+  QQ 指令（发送「虚现 帮助」看全部）：
+   虚现 绑定码                 生成 6 位绑定码，在 App 里输入即完成绑定
+   虚现 状态                   查看角色状态卡
+   虚现 摸头 / 抱抱 / 戳戳 / 挠痒 / 亲亲 / 拍拍 / 抛
+   虚现 喂 <食物>              投喂
+   虚现 说 <内容>              让它在 App 里说出这句话
+   虚现 做 <动作> / 虚现 表情 <情绪>
+   虚现 睡觉 / 起床 / 玩 / 散步 / 跳舞 / 打滚 / 来
+   虚现 名字 <新名字> / 虚现 换装 <装扮> / 虚现 场景 <场景>
+   虚现 静音 / 开声 / 在线 / 重启服务 / 解绑 / 重置 确认
+
+  普通聊天：你在 QQ 里说的话会同步到 App（它在那边"听见"），
+  AstrBot 的回复也会让它在 App 里说出口。App 内嵌 HTTP + WebSocket 服务，默认端口 8899。
+category: 趣味
+tags:
+  - 虚拟角色
+  - 触摸
+  - 双向互通
+  - 桌宠
+support_platforms:
+  - aiocqhttp
+astrbot_version: ">=4.27.2"
