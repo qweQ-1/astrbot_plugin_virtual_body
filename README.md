@@ -3,7 +3,7 @@
 把 AstrBot 变成一个**有身体的虚拟生命**：它住在手机 App / 网页里，可以被手指触摸，
 并且「虚拟」与「现实」双向互通 —— **在 App 里摸它会播报到 QQ，你在 QQ 里说的话会从它嘴里说出来**。
 
-> 配套客户端（iOS 原生 ipa / PWA）在另一个仓库：**`virtual-body-ios`**。
+> 配套客户端（iOS 原生 ipa / PWA）在另一个仓库：**[qweQ-1/virtual-body-ios](https://github.com/qweQ-1/virtual-body-ios)**。
 > 本插件内嵌 HTTP + WebSocket 服务，同时托管那份网页前端（`webapp/`），所以只装插件也能用 PWA 玩。
 
 ---
