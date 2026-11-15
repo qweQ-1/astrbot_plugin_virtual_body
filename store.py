@@ -43,6 +43,11 @@ def default_character(name: str = "小虚") -> dict[str, Any]:
         "pose": {"x": 0.5, "y": 0.62, "facing": 1, "scale": 1.0},
         "outfit": "default",
         "room": "day",
+        # 角色外观来源：canvas（内置 2D）｜image（上传的立绘）｜model（glb/gltf 3D 模型）
+        "renderer": "canvas",
+        # 立绘/模型地址（相对 /pet/ 的路径，或完整 http(s) URL）
+        "image_url": "",
+        "model_url": "",
         "bubble": "",
         "counters": {"pets": 0, "pokes": 0, "feeds": 0, "chats": 0, "touches": 0},
         "last_active": ts,
@@ -104,6 +109,10 @@ class Store:
                     **default_character()["counters"],
                     **((raw.get("character") or {}).get("counters") or {}),
                 }
+                # 2.0 新增的外观字段：旧状态里没有就补默认值
+                for _k in ("renderer", "image_url", "model_url"):
+                    if _k not in base["character"]:
+                        base["character"][_k] = default_character()[_k]
                 base["settings"] = {**default_state()["settings"], **(raw.get("settings") or {})}
                 base["owner"] = {**default_state()["owner"], **(raw.get("owner") or {})}
                 self.data = base
