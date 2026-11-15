@@ -127,6 +127,7 @@ class VirtualBodyPlugin(Star):
             host=host,
             port=port,
             webapp_dir=Path(__file__).parent / "webapp",
+            data_dir=self.data_dir,
             token_required=bool(self.cfg.get("token_required", True)),
             logger=logger,
         )
