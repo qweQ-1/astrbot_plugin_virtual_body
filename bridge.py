@@ -27,12 +27,13 @@ WS_PING_INTERVAL = 25.0
 class Bridge:
     def __init__(self, engine, store, *, host: str = "0.0.0.0", port: int = 8899,
                  webapp_dir: str | Path | None = None, token_required: bool = True,
-                 logger=None):
+                 data_dir: str | Path | None = None, logger=None):
         self.engine = engine
         self.store = store
         self.host = host
         self.port = int(port)
         self.webapp_dir = Path(webapp_dir) if webapp_dir else None
+        self.data_dir = Path(data_dir) if data_dir else None
         self.token_required = token_required
         self.log = logger
         self.app: web.Application | None = None
@@ -56,6 +57,7 @@ class Bridge:
         app.router.add_post("/api/device", self.h_device)
         app.router.add_post("/api/unbind", self.h_unbind)
         app.router.add_post("/api/upload", self.h_upload)
+        app.router.add_post("/api/generate3d", self.h_generate3d)
         app.router.add_get("/uploads/{name}", self.h_uploaded)
         app.router.add_get("/ws", self.h_ws)
         app.router.add_get("/", self.h_static)
@@ -236,7 +238,7 @@ class Bridge:
     async def h_hello(self, request: web.Request) -> web.Response:
         return self._json({"ok": True, "data": {
             "service": "virtual-body",
-            "version": "2.0.0",
+            "version": "2.1.0",
             "bound": bool(self.store.owner.get("qq")),
             "uptime": int(time.time() - self._started_at),
             "server_time": time.time(),
@@ -352,6 +354,109 @@ class Bridge:
             await self.engine.announce("这台设备已解绑", "warn")
         await self.store.save()
         return self._json({"ok": True, "data": {"unbound": True}})
+
+    # ------------------------------------------------------------ 图生 3D
+
+    async def h_generate3d(self, request: web.Request) -> web.Response:
+        """上传一张图片 → 云端生成 3D 模型 → 自动替换角色外观。
+
+        表单字段：``file``（图片）或 ``url``（图片地址）。
+        同步等待生成完成（一般 30~90 秒），返回 ``{"url": "/uploads/xxx.glb", "task_id": ...}``。
+        """
+        if not self._auth(request):
+            return self._unauth()
+
+        from .tripo import TripoClient, TripoError
+
+        api_key = str(self.engine.cfg.get("tripo_api_key") or "").strip()
+        client = TripoClient(api_key, logger=self.log)
+        if not client.enabled:
+            return self._json(
+                {"ok": False, "error": "no_api_key",
+                 "message": "还没配置 3D 生成服务的 Key。在插件配置里填 tripo_api_key 即可（Tripo3D）"},
+                status=503)
+
+        upload_dir = self._upload_dir()
+        if upload_dir is None:
+            return self._json({"ok": False, "error": "no_storage", "message": "服务端没有 webapp 目录"},
+                              status=500)
+
+        # 1) 取输入图片
+        tmp_img: Path | None = None
+        image_url = ""
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+            while field is not None and field.name != "file":
+                field = await reader.next()
+            if field is not None:
+                filename = (field.filename or "input.png").strip()
+                ext = Path(filename).suffix.lower() or ".png"
+                if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+                    return self._json({"ok": False, "error": "bad_type",
+                                       "message": "请上传 png / jpg / webp 图片"}, status=400)
+                tmp_img = self.data_dir / f".gen_input{ext}" if self.data_dir else (upload_dir / f".gen_input{ext}")
+                tmp_img.parent.mkdir(parents=True, exist_ok=True)
+                size = 0
+                with open(tmp_img, "wb") as fh:
+                    while True:
+                        chunk = await field.read_chunk(256 * 1024)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        size += len(chunk)
+                        if size > 16 * 1024 * 1024:
+                            raise TripoError("too_large", "图片太大（上限 16MB）")
+                if size == 0:
+                    raise TripoError("empty", "没有收到图片内容")
+            else:
+                image_url = str(request.query.get("url") or "").strip()
+
+            if tmp_img is None and not image_url:
+                return self._json({"ok": False, "error": "no_input",
+                                   "message": "需要上传图片文件（字段 file）或提供 url"}, status=400)
+
+            # 2) 上传 → 建任务
+            file_token = await client.upload(tmp_img) if tmp_img is not None else ""
+            task_id = await client.create_image_task(file_token=file_token, image_url=image_url)
+            if self.log:
+                self.log.info(f"[virtual-body] 3D 生成任务已创建：{task_id}")
+
+            # 3) 等结果（异步，不阻塞其它请求）
+            task = await client.wait_task(task_id)
+            glb_url = TripoClient.model_url_from(task)
+            if not glb_url:
+                raise TripoError("no_output", "任务成功但没有返回 glb 地址")
+
+            # 4) 下载落地
+            name = f"{secrets.token_hex(8)}.glb"
+            dest = upload_dir / name
+            size = await client.download(glb_url, dest)
+
+            # 5) 直接换上
+            url = f"/uploads/{name}"
+            await self.engine.handle_action("look", {"renderer": "model", "url": url})
+
+            if self.log:
+                self.log.info(f"[virtual-body] 3D 生成完成：{url}（{size // 1024} KB）")
+            return self._json({"ok": True, "data": {
+                "url": url, "task_id": task_id, "size": size,
+                "renderer": "model",
+            }})
+        except TripoError as e:
+            if self.log:
+                self.log.warning(f"[virtual-body] 3D 生成失败：{e.code} {e.message}")
+            return self._json({"ok": False, "error": e.code, "message": e.message}, status=400)
+        except Exception as e:
+            if self.log:
+                self.log.warning(f"[virtual-body] 3D 生成异常：{e!r}")
+            return self._json({"ok": False, "error": "generate_failed", "message": str(e)}, status=500)
+        finally:
+            try:
+                if tmp_img and tmp_img.exists():
+                    tmp_img.unlink()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ 素材上传
 
