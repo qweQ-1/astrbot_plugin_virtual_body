@@ -1,7 +1,7 @@
 name: astrbot_plugin_virtual_body
 display_name: 虚拟身体 · 虚现互通
 author: Minis
-version: v1.0.1
+version: v2.0.0
 repo: https://github.com/local/astrbot_plugin_virtual_body
 desc: >
   把机器人变成一个**有身体的虚拟生命**：它住在手机 App 里，可以被手指触摸（摸头、抱抱、
