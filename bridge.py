@@ -221,7 +221,7 @@ class Bridge:
     async def h_hello(self, request: web.Request) -> web.Response:
         return self._json({"ok": True, "data": {
             "service": "virtual-body",
-            "version": "1.0.0",
+            "version": "1.0.1",
             "bound": bool(self.store.owner.get("qq")),
             "uptime": int(time.time() - self._started_at),
             "server_time": time.time(),
