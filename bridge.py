@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,8 @@ class Bridge:
         app.router.add_get("/api/events", self.h_events)
         app.router.add_post("/api/device", self.h_device)
         app.router.add_post("/api/unbind", self.h_unbind)
+        app.router.add_post("/api/upload", self.h_upload)
+        app.router.add_get("/uploads/{name}", self.h_uploaded)
         app.router.add_get("/ws", self.h_ws)
         app.router.add_get("/", self.h_static)
         app.router.add_get("/{tail:.*}", self.h_static)
@@ -105,7 +108,8 @@ class Bridge:
             raise
         except Exception as e:
             if self.log:
-                self.log.warning(f"[virtual-body] {request.method} {request.path} 出错：{e!r}")
+                import traceback as _tb
+                self.log.warning(f"[virtual-body] {request.method} {request.path} 出错：{e!r}\n{_tb.format_exc()}")
             resp = self._json({"ok": False, "error": "server_error", "message": str(e)}, status=500)
         if isinstance(resp, web.Response):
             resp.headers.update(self._cors())
@@ -136,6 +140,17 @@ class Bridge:
         if not self.token_required:
             return {"qq": self.store.owner.get("qq") or "dev", "device": "dev"}
         return self.store.check_token(self._token(request))
+
+    def _model_name(self) -> str:
+        """当前对话用的模型名，取不到就返回空串（只用于展示）。"""
+        try:
+            provider = self.engine.context.get_using_provider() if self.engine.context else None
+            if provider is None:
+                return ""
+            getter = getattr(provider, "get_model", None)
+            return str(getter()) if callable(getter) else ""
+        except Exception:
+            return ""
 
     def _unauth(self) -> web.Response:
         return self._json(
@@ -221,11 +236,13 @@ class Bridge:
     async def h_hello(self, request: web.Request) -> web.Response:
         return self._json({"ok": True, "data": {
             "service": "virtual-body",
-            "version": "1.0.1",
+            "version": "2.0.0",
             "bound": bool(self.store.owner.get("qq")),
             "uptime": int(time.time() - self._started_at),
             "server_time": time.time(),
-            "features": ["ws", "events_poll", "speech_bubble", "touch", "llm"],
+            "features": ["ws", "events_poll", "speech_bubble", "touch", "llm", "qq_persona"],
+            "persona": getattr(self.engine, "active_persona_name", "") or "",
+            "model": self._model_name(),
         }})
 
     async def h_bind(self, request: web.Request) -> web.Response:
@@ -267,6 +284,8 @@ class Bridge:
             "muted": bool(self.store.settings.get("muted")),
             "owner_qq": self.store.owner.get("qq", ""),
             "nickname": self.store.owner.get("nickname", ""),
+            "persona": getattr(self.engine, "active_persona_name", "") or "",
+            "model": self._model_name(),
             "events": self.store.events_since(since) if since else self.store.data["events"][-20:],
             "last_id": self.store.last_event_id(),
             "server_time": time.time(),
@@ -333,6 +352,87 @@ class Bridge:
             await self.engine.announce("这台设备已解绑", "warn")
         await self.store.save()
         return self._json({"ok": True, "data": {"unbound": True}})
+
+    # ------------------------------------------------------------ 素材上传
+
+    UPLOAD_DIRNAME = "uploads"
+    MAX_UPLOAD = 32 * 1024 * 1024      # 单文件 32MB，够放一张立绘或一个精简 glb
+    ALLOWED_EXT = {
+        ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image",
+        ".gif": "image", ".glb": "model", ".gltf": "model",
+    }
+
+    def _upload_dir(self):
+        if self.webapp_dir is None:
+            return None
+        d = self.webapp_dir / self.UPLOAD_DIRNAME
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    async def h_upload(self, request: web.Request) -> web.Response:
+        """上传角色素材（立绘 / glb 模型）。
+
+        multipart 表单字段：``file``（必填）、``kind``（image|model，可省略，按扩展名判断）。
+        返回 ``{"url": "/uploads/xxx.png", "kind": "image"}``，前端随后调 /api/action 应用。
+        """
+        if not self._auth(request):
+            return self._unauth()
+        reader = await request.multipart()
+        upload_dir = self._upload_dir()
+        if upload_dir is None:
+            return self._json({"ok": False, "error": "no_storage",
+                               "message": "服务端没有配置 webapp 目录，无法保存素材"}, status=500)
+
+        field = await reader.next()
+        while field is not None and field.name != "file":
+            field = await reader.next()
+        if field is None:
+            return self._json({"ok": False, "error": "no_file",
+                               "message": "没有收到文件（表单字段应为 file）"}, status=400)
+
+        filename = (field.filename or "").strip()
+        ext = Path(filename).suffix.lower()
+        if ext not in self.ALLOWED_EXT:
+            return self._json({"ok": False, "error": "bad_type",
+                               "message": f"不支持的格式 {ext or '(无扩展名)'}，可用：图片 png/jpg/webp/gif，模型 glb/gltf"},
+                              status=400)
+
+        blob = bytearray()
+        while True:
+            chunk = await field.read_chunk(256 * 1024)
+            if not chunk:
+                break
+            blob.extend(chunk)
+            if len(blob) > self.MAX_UPLOAD:
+                return self._json({"ok": False, "error": "too_large",
+                                   "message": "文件太大（上限 32MB）"}, status=413)
+
+        name = f"{secrets.token_hex(8)}{ext}"
+        (upload_dir / name).write_bytes(bytes(blob))
+        kind = self.ALLOWED_EXT[ext]
+        if self.log:
+            self.log.info(f"[virtual-body] 收到素材 {filename} → {name}（{len(blob)} B, {kind}）")
+        return self._json({"ok": True, "data": {
+            "url": f"/uploads/{name}",
+            "kind": kind,
+            "size": len(blob),
+            "name": filename,
+        }})
+
+    async def h_uploaded(self, request: web.Request) -> web.StreamResponse:
+        """读回已上传的素材（不需要 token：用不可猜的文件名做访问控制）。"""
+        upload_dir = self._upload_dir()
+        if upload_dir is None:
+            return web.Response(status=404)
+        name = request.match_info.get("name", "")
+        if "/" in name or ".." in name:
+            return web.Response(status=403)
+        target = upload_dir / name
+        if not target.exists():
+            return web.Response(status=404)
+        resp = web.FileResponse(target)
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
 
     # ------------------------------------------------------------ WebSocket
 
