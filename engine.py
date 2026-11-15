@@ -36,6 +36,20 @@ from .store import Store
 SendQQ = Callable[[str], Awaitable[bool]]
 
 
+def _strip_json_tail(text: str) -> str:
+    """去掉模型在句尾附带的 {...} JSON 片段，只留人说的话。"""
+    import re as _re
+
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    # 只在 JSON 出现在末尾时裁剪，避免把台词里的花括号内容也删掉
+    m = _re.search(r"\{\s*\"[a-z_]+\"\s*:.*?\}\s*$", raw, _re.S)
+    if m:
+        raw = raw[: m.start()].strip()
+    return raw or text.strip()
+
+
 class Engine:
     def __init__(
         self,
@@ -56,6 +70,8 @@ class Engine:
         self._history: list[str] = []
         self._decay_task: asyncio.Task | None = None
         self._busy_lock = asyncio.Lock()
+        # 最近一次解析到的 QQ 人格 id（仅用于显示/排查，不影响逻辑）
+        self.active_persona_name: str = ""
 
     # ------------------------------------------------------------ 便捷属性
 
@@ -90,6 +106,65 @@ class Engine:
             return self.context.get_using_provider()
         except Exception:
             return None
+
+    async def qq_persona_prompt(self) -> str:
+        """取「QQ 那边正在用的人格」，让 App 里的对话和 QQ 完全一致。
+
+        AstrBot 解析人格的唯一入口是 ``resolve_selected_persona``（会话级设置 >
+        会话配置 > 全局默认）。这里传同一个 umo 去问它，拿到的就是 QQ 里生效的那一个；
+        注入方式也照抄 AstrBot 自己（``# Persona Instructions`` 段落）。
+        任何一步失败都只回落，不会影响对话本身。
+        """
+        ctx = self.context
+        if ctx is None:
+            return ""
+        try:
+            pm = getattr(ctx, "persona_manager", None)
+            if pm is None:
+                return ""
+            umo = str(self.store.owner.get("umo") or "")
+            provider_settings = {}
+            try:
+                provider_settings = self.cfg.get("provider_settings") or {}
+            except Exception:
+                provider_settings = {}
+            if umo:
+                persona_id, persona, _force, _webchat = await pm.resolve_selected_persona(
+                    umo=umo,
+                    conversation_persona_id=None,
+                    platform_name="aiocqhttp",
+                    provider_settings=provider_settings,
+                )
+            else:
+                # 房主还没在 QQ 里说过话 → 没有 umo，直接取全局默认人格
+                # （就是 QQ 默认会用的那一个）
+                persona_id, persona = "default", None
+                try:
+                    persona = await pm.get_default_persona_v3(None)
+                    persona_id = getattr(persona, "persona_id", "default") if persona else "default"
+                    if isinstance(persona, dict):
+                        persona_id = persona.get("name") or "default"
+                except Exception:
+                    persona = None
+            prompt = ""
+            if persona is None:
+                # 没匹配到人格（例如 umo 为空、或用的是系统默认）——这是正常情况，静默回落
+                if self.log:
+                    self.log.debug(f"[virtual-body] 未匹配到人格（persona_id={persona_id!r}），使用内置性格")
+                return ""
+            if isinstance(persona, dict):
+                prompt = persona.get("prompt") or persona.get("system_prompt") or ""
+            else:
+                prompt = getattr(persona, "prompt", "") or ""
+            if not prompt:
+                return ""
+            # 记录一下用的是哪个人格，方便前端显示 / 排查
+            self.active_persona_name = str(persona_id or "")
+            return f"\n# Persona Instructions\n\n{prompt}\n"
+        except Exception as e:
+            if self.log:
+                self.log.debug(f"[virtual-body] 读取 QQ 人格失败（忽略）：{e}")
+            return ""
 
     # ------------------------------------------------------------ 生命周期
 
@@ -280,11 +355,24 @@ class Engine:
         reaction: dict[str, Any] | None = None
         provider = await self._provider()
         if provider is not None:
-            sys_prompt = R.build_persona_prompt(c, self._persona(), self._history_text())
+            # 关键：App 里的对话要与 QQ 完全一致 —— 同一个模型、同一份人格设定。
+            # 人格由 AstrBot 的 persona_manager 解析（QQ 用什么，这里就用什么）。
+            persona_block = await self.qq_persona_prompt()
+            sys_prompt = persona_block or R.build_persona_prompt(c, self._persona(), self._history_text())
             sys_prompt += (
-                "\n这次不是别人摸你，而是 TA 在 App 里直接对你说话。"
-                "先用一句话回应 TA（像面对面说话，可以带动作描写），"
-                "格式仍然是那个 JSON。"
+                "\n## 你现在有身体\n"
+                f"你现在正以「{c.get('name', '小虚')}」的身份待在一部手机里，TA 可以直接看到你、摸到你。\n"
+                f"你当前的心情 {int(float(c.get('stats', {}).get('mood', 50)))}/100，精力 "
+                f"{int(float(c.get('stats', {}).get('energy', 50)))}/100，对 TA 的亲密度 "
+                f"{int(float(c.get('stats', {}).get('affection', 20)))}/100。\n"
+                f"{self._history_text()}\n"
+                "这次不是 QQ 打字，而是 TA 就站在你面前跟你说话。"
+                "先用一句话回应 TA（可以带括号里的动作描写），"
+                "然后再单独给出一行 JSON，用来驱动你的表情和动作：\n"
+                '{"emotion":"happy","action":"hug","effect":"hearts","speech":true}\n'
+                "emotion 从 happy/calm/shy/sad/angry/sleepy/hungry/excited/love/bored 里选，"
+                "action 从 idle/walk/jump/sit/sleep/eat/wave/hug/spin/shake/dance/think/panic 里选，"
+                "effect 从 hearts/stars/sparkle/sweat/zzz/anger/none 里选。JSON 之前那句要是自然的话。"
             )
             try:
                 resp = await asyncio.wait_for(
@@ -303,12 +391,23 @@ class Engine:
                     }
                     reply = reaction["text"]
                 else:
-                    reply = (raw or "").strip()[:200]
+                    # 模型没按 JSON 格式回（人格提示词可能让它只用自然语言）：
+                    # 把整段文字当台词，情绪/动作按文字猜一个，不能把 reaction 留空。
+                    reply = _strip_json_tail(raw)[:200]
+                    if reply:
+                        _emo = heuristic_emotion(reply, c)
+                        reaction = {
+                            "text": reply,
+                            "emotion": _emo,
+                            "action": normalize_action("nod", _emo),
+                            "effect": "none",
+                            "speech": True,
+                        }
             except Exception as e:
                 if self.log:
                     self.log.warning(f"[virtual-body] App 对话 LLM 失败：{e}")
 
-        if not reply:
+        if not reply or not reaction:
             emo = heuristic_emotion(text, c)
             reply = {
                 "sad": "……抱一下就好了。",
@@ -382,6 +481,23 @@ class Engine:
             room = str(args.get("room") or "day")[:12]
             c["room"] = room
             await self.store.emit("state", {"character": c, "patch": {"room": room}})
+        elif action in ("look", "appearance", "set_face"):
+            # 切换外观来源：canvas（内置）｜image（上传立绘）｜model（glb 3D 模型）
+            renderer = str(args.get("renderer") or "").strip().lower()
+            url = str(args.get("url") or "").strip()[:512]
+            if renderer not in ("canvas", "image", "model"):
+                return {"ok": False, "error": "bad_renderer",
+                        "message": "renderer 只能是 canvas / image / model"}
+            if renderer != "canvas" and not url:
+                return {"ok": False, "error": "no_url", "message": "切换外观需要提供 url"}
+            c["renderer"] = renderer
+            c["image_url"] = url if renderer == "image" else ""
+            c["model_url"] = url if renderer == "model" else ""
+            c["updated_at"] = time.time()
+            label = {"canvas": "回到内置形象", "image": "换上你给的立绘", "model": "换上你给的 3D 模型"}[renderer]
+            await self.store.emit("state", {"character": c,
+                                            "patch": {"renderer": renderer, "url": url}})
+            await self._emit_say(f"{label}，好看吗？", "happy", "spin", "sparkle", source="app")
         elif action == "mute":
             on = bool(args.get("on", True))
             self.store.settings["muted"] = on
