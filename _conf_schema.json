@@ -76,5 +76,11 @@
         "hint": "这些 QQ 号也能操控角色（房主始终可以）。",
         "type": "list",
         "default": []
+    },
+    "tripo_api_key": {
+        "description": "3D 生成服务 Key（Tripo3D）",
+        "hint": "填了以后，App 里「上传图片生成 3D 角色」就能用。到 tripo3d.ai 注册领取，图生3D约 20-30 积分/次（1积分=$0.01）。留空则关闭该功能。",
+        "type": "string",
+        "default": ""
     }
 }
